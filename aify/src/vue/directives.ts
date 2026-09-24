@@ -1,4 +1,4 @@
-// Vue 3 binding for AIfy. Provides the `v-aify:page|module|click|input` directive.
+// Vue 3 binding for AIfy. Provides the `v-aify:page|module|click|input|text` directive.
 //
 // This is the ONLY layer that knows about Vue / the DOM. It registers nodes into
 // the OperationPlane's registry and supplies the FIXED handlers that `act` will
@@ -7,7 +7,7 @@
 
 import type { Directive, DirectiveBinding, App } from 'vue';
 import type { OperationPlaneImpl } from '../core/operationPlane.ts';
-import type { ActionType } from '../core/types.ts';
+import type { ActionMeta, ActionType } from '../core/types.ts';
 import { extractA11y } from '../core/a11y.ts';
 import { setNativeValue } from '../core/setNativeValue.ts';
 
@@ -61,7 +61,9 @@ export function createAify(plane: OperationPlaneImpl) {
   const directive: Directive<HTMLElement, any> = {
     mounted(el: HTMLElement, binding: DirectiveBinding) {
       const arg = binding.arg as string | undefined;
-      const value: Record<string, any> = binding.value ?? {};
+      const raw = binding.value as unknown;
+      const value: Record<string, any> =
+        typeof raw === 'string' ? { text: raw } : ((raw as Record<string, any>) ?? {});
 
       if (arg === 'page') {
         containers.add(el);
@@ -77,13 +79,32 @@ export function createAify(plane: OperationPlaneImpl) {
       } else if (arg === 'module') {
         containers.add(el);
         reg.registerModule(el, { name: value.name, description: value.description });
+      } else if (arg === 'text') {
+        // Read-only material. The text is read live from `el` at snapshot time
+        // unless an explicit string/function override is supplied.
+        reg.registerText(el, {
+          description: value.description,
+          text: value.text,
+        });
       } else if (arg === 'click' || arg === 'input') {
         const type: ActionType = arg;
-        const meta = {
+        const meta: ActionMeta = {
           description: value.description,
+          // Legacy flat fields remain the success branch.
           sideEffects: value.sideEffects,
           transitionsTo: value.transitionsTo,
           required: value.required,
+          success: value.success,
+          failure: value.failure,
+          // `resolveOutcome` (or a function passed as `outcome`) inspects app
+          // state after the fixed DOM handler ran, because click listeners
+          // cannot return a value.
+          resolveOutcome:
+            typeof value.resolveOutcome === 'function'
+              ? value.resolveOutcome
+              : typeof value.outcome === 'function'
+                ? value.outcome
+                : undefined,
         };
         const handler = type === 'click' ? clickHandler(el) : inputHandler(el);
         reg.registerAction(el, type, meta, handler);
@@ -91,7 +112,13 @@ export function createAify(plane: OperationPlaneImpl) {
     },
     unmounted(el: HTMLElement, binding: DirectiveBinding) {
       const arg = binding.arg as string | undefined;
-      if (arg === 'page' || arg === 'module' || arg === 'click' || arg === 'input') {
+      if (
+        arg === 'page' ||
+        arg === 'module' ||
+        arg === 'text' ||
+        arg === 'click' ||
+        arg === 'input'
+      ) {
         const node = reg.getNodeByEl(el);
         if (node) reg.unregister(node.id);
       }

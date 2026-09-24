@@ -1,12 +1,15 @@
 # vue-ui-agentify
 
-Three independent subprojects that together make a GUI AI-native. Each folder
-owns its package manager files, source, and dependencies.
+Four independent subprojects that together make a GUI AI-native. Each folder
+owns its package manager files, source, and dependencies. `lab/` is a
+local-only playground and is gitignored; the publishable projects are `aify/`,
+`mcp/`, and `demo/`.
 
 ```
 aify/   Vue 3 library + framework-agnostic core + browser transport
 mcp/    MCP bridge (Rust binary)
-demo/   Runnable Vue demo consuming aify + the Rust bridge
+demo/   Runnable Vue demo consuming vue-aify + the Rust bridge
+lab/    local-only manual test lab (gitignored)
 ```
 
 ## aify
@@ -18,7 +21,6 @@ arbitrary JavaScript and never manages focus/routing itself.
 ```bash
 cd aify
 npm install
-npm test
 npm run typecheck
 npm run build
 ```
@@ -49,8 +51,15 @@ cargo run --release -- stdio
 
 ## demo
 
-A complete login → home → logout-confirm flow. It consumes `aify` as a local
-`file:` package dependency and runs the Rust bridge with `cargo`.
+A complete login → home → logout-confirm flow, plus the declared failure branch
+`login → login-error → login`. The demo credentials are `admin` /
+`demoP@ssw0rd`; any other pair takes the failure branch. It consumes `vue-aify`
+as a local `file:` package dependency and runs the Rust bridge with `cargo`.
+
+The demo uses `vue-router` hash routes (`#/login`, `#/login-error`, `#/home`)
+whose names match the static page ids, so the URL is the source of truth for the
+focused page: direct links and browser back/forward both work, and `act`-driven
+transitions update the address bar.
 
 ```bash
 cd demo
@@ -61,3 +70,14 @@ npm run agent      # terminal C: drive the five tools
 ```
 
 See `demo/README.md` for the connection-ticket flow and exact tool calls.
+
+## lab
+
+A local-only playground for experiments that should not be pushed. It is listed
+in `.gitignore`; `demo/` is the publishable demo.
+
+```bash
+cd lab
+npm install
+npm run dev        # http://localhost:5174
+```

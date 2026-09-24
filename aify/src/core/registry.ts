@@ -9,8 +9,10 @@
 // problems entirely: by the time anyone asks, the whole tree is mounted.
 
 import type {
+  ActionHandler,
   ActionMeta,
   ActionNode,
+  ActionOutcome,
   ActionType,
   AifyGraph,
   ModuleMeta,
@@ -22,8 +24,11 @@ import type {
   SerializedModule,
   SerializedNode,
   SerializedPage,
+  SerializedText,
   StaticEdgeDef,
   StaticPageDef,
+  TextMeta,
+  TextNode,
 } from './types.ts';
 
 export interface RegistryDeps {
@@ -46,8 +51,8 @@ let counter = 0;
 const nextId = (p: string) => `${p}${(++counter).toString(36)}`;
 
 export class Registry {
-  private nodes = new Map<string, ContainerNode | ActionNode>();
-  private elToNode = new WeakMap<Element, ContainerNode | ActionNode>();
+  private nodes = new Map<string, RegisteredNode>();
+  private elToNode = new WeakMap<Element, RegisteredNode>();
   private deps: RegistryDeps;
 
   // Static graph + dynamically observed graph. Both survive unmounts.
@@ -80,11 +85,20 @@ export class Registry {
     return node;
   }
 
+  // Read-only, agent-visible text material. It has no handler and never takes
+  // part in act/focus/routing; it only appears in the snapshot tree.
+  registerText(el: Element, meta: TextMeta): TextNode {
+    const node: TextNode = { kind: 'text', id: nextId('t'), meta, el };
+    this.nodes.set(node.id, node);
+    this.elToNode.set(el, node);
+    return node;
+  }
+
   registerAction(
     el: Element,
     type: ActionType,
     meta: ActionMeta,
-    handler: (params?: { value?: string }) => void | Promise<void>,
+    handler: ActionHandler,
   ): ActionNode {
     const node: ActionNode = {
       kind: 'action',
@@ -164,32 +178,58 @@ export class Registry {
   //   - edges observed when the agent actually traverses a transition;
   //   - live action edges for pages currently mounted.
   // Static edges bind to a live action id whenever the source page is mounted.
+  // Success and failure branches are distinct edges (same from/to may coexist).
   edgesFor(nodeId?: string): RoutineEdge[] {
     const byTarget = new Map<string, RoutineEdge>();
-    const key = (from: string, to: string) => `${from}\u0000${to}`;
+    const outcomeOf = (outcome?: ActionOutcome): ActionOutcome =>
+      outcome ?? 'success';
+    const key = (edge: RoutineEdge) =>
+      `${outcomeOf(edge.outcome)}\u0000${edge.from}\u0000${edge.to}`;
+    const merge = (edge: RoutineEdge) => {
+      const normalized: RoutineEdge = { ...edge, outcome: outcomeOf(edge.outcome) };
+      const edgeKey = key(normalized);
+      const current = byTarget.get(edgeKey);
+      if (!current) {
+        byTarget.set(edgeKey, normalized);
+        return;
+      }
+      byTarget.set(edgeKey, {
+        ...current,
+        ...normalized,
+        declared: !!(current.declared || normalized.declared),
+        observed: !!(current.observed || normalized.observed),
+        bound: !!(current.bound || normalized.bound),
+      });
+    };
 
     for (const edge of this.staticEdges) {
-      byTarget.set(key(edge.from, edge.to), this.resolveStaticEdge(edge));
+      merge(this.resolveStaticEdge(edge));
     }
 
     for (const edge of this.observedEdges.values()) {
-      byTarget.set(key(edge.from, edge.to), edge);
+      merge(edge);
     }
 
     const actions = [...this.nodes.values()].filter(
-      (n): n is ActionNode => n.kind === 'action' && !!n.meta.transitionsTo,
+      (n): n is ActionNode => n.kind === 'action',
     );
     for (const action of actions) {
       const fromId = this.pageIdOf(action.el);
       if (!fromId) continue;
-      const toId = action.meta.transitionsTo!;
-      byTarget.set(key(fromId, toId), {
-        from: fromId,
-        to: toId,
-        via: action.id,
-        label: action.meta.description,
-        sideEffects: action.meta.sideEffects,
-      });
+      for (const branch of this.actionBranches(action)) {
+        merge({
+          from: fromId,
+          to: branch.to,
+          via: action.id,
+          label: branch.label,
+          when: branch.when,
+          sideEffects: branch.sideEffects,
+          outcome: branch.outcome,
+          declared: false,
+          observed: false,
+          bound: true,
+        });
+      }
     }
 
     let edges = [...byTarget.values()];
@@ -204,46 +244,112 @@ export class Registry {
     return edges;
   }
 
+  // Both branches an action can reach. A branch only produces an edge when it
+  // declares a destination; the success branch falls back to the legacy fields.
+  private actionBranches(action: ActionNode): Array<{
+    outcome: ActionOutcome;
+    to: string;
+    label?: string;
+    when?: string;
+    sideEffects?: string;
+  }> {
+    const out: Array<{
+      outcome: ActionOutcome;
+      to: string;
+      label?: string;
+      when?: string;
+      sideEffects?: string;
+    }> = [];
+    const success = action.meta.success;
+    const successTo = success?.transitionsTo ?? action.meta.transitionsTo;
+    if (successTo) {
+      out.push({
+        outcome: 'success',
+        to: successTo,
+        label: success?.description ?? action.meta.description,
+        when: success?.when,
+        sideEffects: success?.sideEffects ?? action.meta.sideEffects,
+      });
+    }
+    const failure = action.meta.failure;
+    if (failure?.transitionsTo) {
+      out.push({
+        outcome: 'failure',
+        to: failure.transitionsTo,
+        label: failure.description ?? action.meta.description,
+        when: failure.when,
+        sideEffects: failure.sideEffects,
+      });
+    }
+    return out;
+  }
+
   private resolveStaticEdge(edge: StaticEdgeDef): RoutineEdge {
+    const outcome = edge.outcome ?? 'success';
     const live = [...this.nodes.values()].find(
       (node): node is ActionNode =>
         node.kind === 'action' &&
-        node.meta.transitionsTo === edge.to &&
-        this.pageIdOf(node.el) === edge.from,
+        this.pageIdOf(node.el) === edge.from &&
+        this.actionBranches(node).some(
+          (branch) => branch.outcome === outcome && branch.to === edge.to,
+        ),
     );
     if (!live) {
       return {
         from: edge.from,
         to: edge.to,
-        via: edge.via ?? `static:${edge.from}->${edge.to}`,
+        via:
+          edge.via ??
+          `static:${edge.from}->${edge.to}${outcome === 'failure' ? '#failure' : ''}`,
         label: edge.label,
+        when: edge.when,
         sideEffects: edge.sideEffects,
+        outcome,
+        declared: true,
+        observed: false,
+        bound: false,
       };
     }
+    const branch = this.actionBranches(live).find(
+      (candidate) => candidate.outcome === outcome && candidate.to === edge.to,
+    );
     return {
       from: edge.from,
       to: edge.to,
       via: live.id,
-      label: live.meta.description ?? edge.label,
-      sideEffects: live.meta.sideEffects ?? edge.sideEffects,
+      label: branch?.label ?? edge.label,
+      when: branch?.when ?? edge.when,
+      sideEffects: branch?.sideEffects ?? edge.sideEffects,
+      outcome,
+      declared: true,
+      observed: false,
+      bound: true,
     };
   }
 
-  // Called after `act` successfully invokes a transition action.
+  // Called after `act` invokes a handler that resulted in a transition. Both
+  // success and failure traversals are recorded, keyed by branch.
   recordTraversal(
     actionId: string,
     fromPageId: string | null,
     toPageId: string,
     label?: string,
     sideEffects?: string,
+    outcome: ActionOutcome = 'success',
+    when?: string,
   ): void {
     if (!fromPageId) return;
-    this.observedEdges.set(`${fromPageId}\u0000${toPageId}`, {
+    this.observedEdges.set(`${outcome}\u0000${fromPageId}\u0000${toPageId}`, {
       from: fromPageId,
       to: toPageId,
       via: actionId,
       label,
+      when,
       sideEffects,
+      outcome,
+      declared: false,
+      observed: true,
+      bound: true,
     });
     this.observedPageIds.add(fromPageId);
     this.observedPageIds.add(toPageId);
@@ -274,8 +380,32 @@ export class Registry {
       if (this.deps.findParentContainerEl(node.el) !== parentEl) continue;
       if (node.kind === 'action') out.push(this.serializeAction(node));
       else if (node.kind === 'module') out.push(this.serializeContainer(node));
+      else if (node.kind === 'text') {
+        const text = this.serializeText(node);
+        if (text) out.push(text);
+      }
     }
     return out;
+  }
+
+  // Empty text is omitted: a marker whose content is not currently present has
+  // nothing to show the agent, and it will appear as soon as it has content.
+  private serializeText(node: TextNode): SerializedText | null {
+    const meta = node.meta;
+    const raw =
+      typeof meta.text === 'function'
+        ? meta.text()
+        : typeof meta.text === 'string'
+          ? meta.text
+          : (node.el.textContent ?? '');
+    const text = raw.replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    return {
+      id: node.id,
+      kind: 'text',
+      text,
+      description: meta.description,
+    };
   }
 
   private serializeContainer(node: ModuleNode): SerializedModule {
@@ -291,13 +421,29 @@ export class Registry {
 
   private serializeAction(node: ActionNode): SerializedAction {
     const a11y = this.deps.extractA11y(node.el);
+    const success = node.meta.success;
+    const failure = node.meta.failure;
+    const successSideEffects = success?.sideEffects ?? node.meta.sideEffects;
+    const successTransitionsTo = success?.transitionsTo ?? node.meta.transitionsTo;
+    // Keep the flat fields as the success branch for older consumers, and add
+    // explicit branches only when the action declares them.
+    const hasExplicitBranches = !!success || !!failure;
     return {
       id: node.id,
       kind: 'action',
       type: node.type,
       description: node.meta.description,
-      sideEffects: node.meta.sideEffects,
-      transitionsTo: node.meta.transitionsTo,
+      sideEffects: successSideEffects,
+      transitionsTo: successTransitionsTo,
+      success: hasExplicitBranches
+        ? {
+            description: success?.description,
+            when: success?.when,
+            sideEffects: successSideEffects,
+            transitionsTo: successTransitionsTo,
+          }
+        : undefined,
+      failure,
       enabled: !this.isActionDisabled(node.el),
       label: a11y.label,
       role: a11y.role,
@@ -309,3 +455,4 @@ export class Registry {
 }
 
 type ContainerNode = PageNode | ModuleNode;
+type RegisteredNode = ContainerNode | ActionNode | TextNode;

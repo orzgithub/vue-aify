@@ -74,9 +74,9 @@ On startup, stderr prints:
 | Tool | Arguments | Result |
 |---|---|---|
 | `map` | — | `{ pages: [...] }` |
-| `routine` | `{ node? }` | `{ edges: [...] }` |
-| `snapshot` | — | `{ focused, page }` |
-| `act` | `{ actionId, value? }` | `{ ok, transitionsTo? }` |
+| `routine` | `{ node? }` | `{ edges: [{from,to,via,label?,when?,sideEffects?,outcome?}] }` |
+| `snapshot` | — | `{ focused, page }` (page tree contains `action`/`module`/`text` nodes) |
+| `act` | `{ actionId, value? }` | `{ ok, outcome?, transitionsTo?, sideEffects?, error? }` |
 | `wait_for_ui` | `{ timeoutMs? }` | `{ ready, reason? }` |
 
 ## Rust layout

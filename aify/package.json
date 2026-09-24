@@ -1,6 +1,6 @@
 {
   "name": "vue-aify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-native control layer for GUI: a structured page/action graph with fixed operations (Web + Desktop isomorphic).",
   "type": "module",
   "main": "src/index.ts",

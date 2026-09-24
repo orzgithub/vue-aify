@@ -8,6 +8,14 @@
 //
 // The agent keeps NO page state of its own; it re-reads each step.
 //
+// The demo login has two declared branches:
+//   success -> home          when username=admin and password=demoP@ssw0rd
+//   failure -> login-error   otherwise
+//
+// The page is also a real URL app (vue-router hash history): each branch
+// pushes a route, so the address bar changes (#/login -> #/login-error ->
+// #/login -> #/home) and browser back/forward works alongside the agent.
+//
 // NOTE on timing: `wait_for_ui` only waits for the focused page's `ready` flag
 // (page loading). Focus changes are a separate fact the agent must RE-READ via
 // `map()`/`snapshot()`. After a `act` with transitionsTo, we poll `map()` until
@@ -64,34 +72,64 @@ async function waitForFocus(targetId: string, timeoutMs = 5000): Promise<void> {
   throw new Error(`focus did not move to "${targetId}". current map: ${JSON.stringify(pages)}`)
 }
 
+// Fill the login form and click the submit action. The button's metadata has
+// success/failure branches; we only click, then read the returned outcome.
+async function submitLogin(username: string, password: string): Promise<any> {
+  const page = await snapshot()
+  const userInput = findAction(page, (a: any) => a.type === 'input' && a.placeholder === 'username')
+  const passwordInput = findAction(page, (a: any) => a.type === 'input' && a.placeholder === 'password')
+  if (!userInput) throw new Error('username input not found in login page: ' + JSON.stringify(page))
+  if (!passwordInput) throw new Error('password input not found in login page: ' + JSON.stringify(page))
+
+  console.log('found username input:', userInput.id)
+  console.log(`act(username, "${username}")`, await call('act', { actionId: userInput.id, value: username }))
+  console.log('found password input:', passwordInput.id)
+  console.log(`act(password, "${password}")`, await call('act', { actionId: passwordInput.id, value: password }))
+
+  // Flat `transitionsTo` mirrors the success branch, so this also matches old metadata.
+  const submit = findAction(page, (a: any) => a.transitionsTo === 'home' || a.success?.transitionsTo === 'home')
+  if (!submit) throw new Error('submit action not found in login page: ' + JSON.stringify(page))
+  console.log('submit action:', submit.id)
+  return call('act', { actionId: submit.id })
+}
+
 async function main() {
   console.log('=== 1) map() ===')
-  const pages0 = await call('map')
-  console.log(pages0)
+  console.log(await call('map'))
 
   console.log('\n=== 2) routine() ===')
   console.log(await call('routine'))
 
-  // ---- login: fill username ----
-  await pause('before reading login')
+  // ---- login attempt 1: wrong credentials -> failure branch ----
+  await pause('before reading login (wrong credentials)')
   console.log('\n=== 3) snapshot(login) ===')
-  let page = await snapshot()
-  const userInput = findAction(page, (a: any) => a.type === 'input' && a.placeholder === 'username')
-  if (!userInput) throw new Error('username input not found in login page: ' + JSON.stringify(page))
-  console.log('found input:', userInput.id, userInput.placeholder)
-  console.log('=== 4) act(userInput, "alice") ===')
-  console.log(await call('act', { actionId: userInput.id, value: 'alice' }))
-  await pause('after typing username')
+  console.log('=== 4) act(wrong credentials) -> failure -> login-error ===')
+  console.log(await submitLogin('alice', 'wrong-password'))
+  console.log('=== 5) wait_for_ui() ===')
+  console.log(await call('wait_for_ui', { timeoutMs: 3000 }))
+  await waitForFocus('login-error')
+  await pause('after the failure branch (login-error)')
 
-  // ---- login: click submmit login -> transitionsTo home ----
-  const submit = findAction(page, (a: any) => a.transitionsTo === 'home')
-  if (!submit) throw new Error('submit action not found in login page: ' + JSON.stringify(page))
-  console.log('\n=== 4) act(submit) -> transitionsTo home ===')
-  console.log(await call('act', { actionId: submit.id }))
+  // ---- login-error: back -> login ----
+  console.log('\n=== 3) snapshot(login-error) ===')
+  let page = await snapshot()
+  const back = findAction(page, (a: any) => a.transitionsTo === 'login')
+  if (!back) throw new Error('back action not found in login-error page: ' + JSON.stringify(page))
+  console.log('=== 4) act(back) ===')
+  console.log(await call('act', { actionId: back.id }))
+  console.log('=== 5) wait_for_ui() ===')
+  console.log(await call('wait_for_ui', { timeoutMs: 3000 }))
+  await waitForFocus('login')
+  await pause('after going back to login')
+
+  // ---- login attempt 2: correct credentials -> success branch ----
+  console.log('\n=== 3) snapshot(login) ===')
+  console.log('=== 4) act(admin / demoP@ssw0rd) -> success -> home ===')
+  console.log(await submitLogin('admin', 'demoP@ssw0rd'))
   console.log('=== 5) wait_for_ui() ===')
   console.log(await call('wait_for_ui', { timeoutMs: 3000 }))
   await waitForFocus('home')
-  await pause('after navigating to home')
+  await pause('after the success branch (home)')
 
   // ---- on home: open dialog (transitionsTo logout-confirm-dialog) ----
   console.log('\n=== 3) snapshot(home) ===')

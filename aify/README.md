@@ -11,6 +11,13 @@ runnable demo lives in `../demo`.
 
 - The UI is a **directive graph**: nodes are `page`s, edges are `action`s.
 - An action declares `transitionsTo: <pageId>` → that is the edge.
+- An action may declare separate `success` / `failure` branches, each with its
+  own `description`, `when`, `sideEffects` and `transitionsTo`. The flat legacy
+  fields are the success branch, so old syntax keeps working. `when` states the
+  condition ("credentials are valid"), and is also copied onto `routine()` edges
+  so planning can distinguish success from failure paths.
+- `v-aify:text` marks a read-only text material as agent-visible. It appears in
+  `snapshot()` only; unmarked text stays invisible.
 - **Exactly one page is `focused`** at a time.
 - `act` only invokes a pre-registered, fixed handler. It never runs arbitrary JS
   and never manages focus/routing.
@@ -20,9 +27,9 @@ runnable demo lives in `../demo`.
 | Tool | Input | Output |
 |---|---|---|
 | `map` | — | all existing pages `{id,title,description,focused,ready}` |
-| `routine` | `{node?}` | edges `[{from,to,via,label,sideEffects}]` |
-| `snapshot` | — | focused page tree of actions/modules |
-| `act` | `{actionId, value?}` | `{ok, transitionsTo?}`; errors: `unknown \| not focused \| disabled \| missing value` |
+| `routine` | `{node?}` | edges `[{from,to,via,label,when?,sideEffects,outcome?}]` |
+| `snapshot` | — | focused page tree of actions/modules/text (actions include `success?`/`failure?`) |
+| `act` | `{actionId, value?}` | `{ok, outcome?, transitionsTo?, sideEffects?, error?}`; errors: `unknown \| not focused \| disabled \| missing value` |
 | `wait_for_ui` | `{timeoutMs?}` | `{ready:true}` or `{ready:false,reason:'timeout'}` |
 
 `map` and `routine` are the graph-planning tools. Static pages/edges can be
@@ -45,15 +52,35 @@ const isFocused = () => true
   <div v-aify:page="{ id: 'login', title: 'login page', focused: isFocused }">
     <section v-aify:module="{ name: 'credentials', description: 'credentials for login' }">
       <input v-aify:input="{ description: 'input username', required: true }" placeholder="username" />
+      <p v-aify:text="{ description: 'login status' }">{{ status }}</p>
       <button v-aify:click="{
         description: 'start login',
+        // Legacy flat fields: the success branch.
         sideEffects: 'send a login request',
-        transitionsTo: 'home'
+        transitionsTo: 'home',
+        success: { when: 'the credentials are accepted' },
+        // Optional explicit branches. `resolveOutcome` inspects app state after
+        // the DOM click, because a click listener cannot return a value.
+        failure: {
+          description: 'login rejected',
+          when: 'the credentials are rejected',
+          sideEffects: 'stay on the login page and show an error',
+          transitionsTo: 'login-error'
+        },
+        resolveOutcome: () => loginFailed.value
+          ? { outcome: 'failure', error: 'bad credentials' }
+          : { outcome: 'success' }
       }">login</button>
     </section>
   </div>
 </template>
 ```
+
+`v-aify:text` exposes read-only material. By default the text is read live from
+the element (`textContent`) at snapshot time, so status/error copy can change
+without re-registering. Pass a string or `() => string` to override it. Only
+marked text appears in `snapshot()`, as `{ kind: 'text', text, description }`;
+unmarked text stays invisible, and text nodes never appear in `routine()`.
 
 Install once:
 
@@ -108,15 +135,13 @@ src/
     a11y.ts            reuses aria/placeholder/text
     setNativeValue.ts  prototype setter so v-model detects programmatic input
   vue/                 the only Vue/DOM-aware layer
-    directives.ts      v-aify:page|module|click|input + install()
+    directives.ts      v-aify:page|module|text|click|input + install()
   transport/           WebSocket client contract + implementation
     types.ts
     websocket.ts
   bridge/
     ticket.ts          browser-safe ticket codec (no node:crypto)
   index.ts             public API
-test/
-  core.smoke.ts        framework-agnostic smoke test
 ```
 
 ## Commands
@@ -125,7 +150,6 @@ test/
 npm install
 npm run typecheck
 npm run build
-npm test
 ```
 
 `npm run build` emits `dist/` with rewritten `.js` imports (TypeScript 5.7+

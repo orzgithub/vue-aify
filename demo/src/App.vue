@@ -1,16 +1,59 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import LoginPage from './components/LoginPage.vue'
-import HomePage from './components/HomePage.vue'
+import { computed, ref } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ConnectPanel from './components/ConnectPanel.vue'
 
-// The "window manager" state: exactly one focused page at a time.
-const route = ref<'login' | 'home'>('login')
+// URL is the source of truth for the page graph. The route name matches the
+// page id declared in the static graph (src/main.ts), so `map()` and
+// `snapshot()` follow the URL — browser back/forward and direct links included.
+const route = useRoute()
+const router = useRouter()
+
+// The modal is transient overlay state, not a URL route.
 const dialogOpen = ref(false)
 
+type PageName = 'login' | 'login-error' | 'home'
+const pageName = computed<PageName>(() => {
+  const name = route.name
+  return name === 'login-error' || name === 'home' ? name : 'login'
+})
+
+// The page directive is evaluated when the keyed wrapper mounts, so this
+// function returns the metadata for the current URL route.
+function pageMeta() {
+  if (pageName.value === 'login') {
+    return {
+      id: 'login',
+      title: 'login page',
+      loading: false,
+      focused: () => pageName.value === 'login' && !dialogOpen.value,
+    }
+  }
+  if (pageName.value === 'login-error') {
+    return {
+      id: 'login-error',
+      title: 'login failed',
+      loading: false,
+      focused: () => pageName.value === 'login-error' && !dialogOpen.value,
+    }
+  }
+  return {
+    id: 'home',
+    title: 'home page',
+    loading: false,
+    focused: () => pageName.value === 'home' && !dialogOpen.value,
+  }
+}
+
 function goHome() {
-  route.value = 'home'
+  router.push({ name: 'home' })
+}
+function loginFailed() {
+  router.push({ name: 'login-error' })
+}
+function backToLogin() {
+  router.push({ name: 'login' })
 }
 function openDialog() {
   dialogOpen.value = true
@@ -20,7 +63,7 @@ function closeDialog() {
 }
 function logout() {
   dialogOpen.value = false
-  route.value = 'login'
+  router.push({ name: 'login' })
 }
 </script>
 
@@ -35,19 +78,24 @@ function logout() {
     <!--
       Pages may be mounted/unmounted dynamically. The static graph in main.ts
       keeps their nodes/edges visible to map/routine even while unmounted.
+      `:key="pageName"` forces a fresh page registration when the URL changes.
+      The route line is marked as text, so snapshot() shows the agent the URL.
     -->
-    <LoginPage
-      v-if="route === 'login'"
-      v-aify:page="{ id: 'login', title: 'login page', loading: false, focused: () => route === 'login' && !dialogOpen }"
-      @success="goHome"
-    />
-
-    <HomePage
-      v-if="route === 'home'"
-      v-aify:page="{ id: 'home', title: 'home page', loading: false, focused: () => route === 'home' && !dialogOpen }"
-      @open-dialog="openDialog"
-      @logout="logout"
-    />
+    <RouterView v-slot="{ Component }">
+      <div :key="pageName" v-aify:page="pageMeta()">
+        <p class="route-info" v-aify:text="{ description: 'current URL route' }">
+          URL route: <code>{{ route.name }}</code> — <code>{{ route.fullPath }}</code>
+        </p>
+        <component
+          :is="Component"
+          @success="goHome"
+          @failure="loginFailed"
+          @back="backToLogin"
+          @open-dialog="openDialog"
+          @logout="logout"
+        />
+      </div>
+    </RouterView>
 
     <!-- Modal = a separate page node. While open it is the focused page. -->
     <ConfirmDialog
@@ -61,8 +109,11 @@ function logout() {
 
 <style>
 .app { font-family: system-ui, sans-serif; max-width: 520px; margin: 2rem auto; padding: 1rem; }
+.route-info { color: #64748b; font-size: 0.85rem; margin: 0 0 0.75rem; }
+.route-info code { color: #334155; }
 .page { border: 1px solid #ddd; border-radius: 10px; padding: 1.25rem; margin-top: 1rem; }
 .page h2 { margin-top: 0; }
+.hint { color: #64748b; font-size: 0.85rem; margin: -0.25rem 0 0.75rem; }
 button { padding: 6px 12px; margin-right: 8px; cursor: pointer; border-radius: 6px; border: 1px solid #bbb; }
 button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
 input { padding: 6px 10px; border: 1px solid #ccc; border-radius: 6px; width: 100%; box-sizing: border-box; }

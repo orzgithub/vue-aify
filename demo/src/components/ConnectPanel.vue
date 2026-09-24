@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { inject, ref, onMounted, onUnmounted } from 'vue'
-import type { ConnectController, ConnectionStatus } from 'aify'
+import type { ConnectController, ConnectionStatus } from 'vue-aify'
 
 // The transport is provided by main.ts. The page never auto-connects: the user
 // pastes the bridge's connection credential (a base64 string) and clicks connect.

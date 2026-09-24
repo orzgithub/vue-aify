@@ -4,6 +4,9 @@
 
 import { Registry, type RegistryDeps } from './registry.ts';
 import type {
+  ActionOutcome,
+  ActionOutcomeMeta,
+  ActionOutcomeSignal,
   ActResult,
   OperationPlane,
   OperationPlaneOptions,
@@ -13,6 +16,36 @@ import type {
   SnapshotResult,
   WaitResult,
 } from './types.ts';
+
+/**
+ * Interpret a handler/resolver signal. Anything that is not an explicit
+ * failure is success, so legacy handlers that return nothing keep working.
+ */
+function resolveOutcomeSignal(signal: ActionOutcomeSignal): {
+  outcome: ActionOutcome;
+  error?: string;
+  transitionsTo?: string;
+} {
+  if (signal === false || signal === 'failure') return { outcome: 'failure' };
+  if (typeof signal === 'object' && signal !== null) {
+    const explicit = signal.outcome;
+    const outcome: ActionOutcome =
+      explicit ??
+      (signal.ok === false
+        ? 'failure'
+        : signal.ok === true
+          ? 'success'
+          : signal.error
+            ? 'failure'
+            : 'success');
+    return {
+      outcome,
+      error: signal.error,
+      transitionsTo: signal.transitionsTo,
+    };
+  }
+  return { outcome: 'success' };
+}
 
 export interface OperationPlaneConfig extends RegistryDeps, OperationPlaneOptions {}
 
@@ -106,26 +139,77 @@ export class OperationPlaneImpl implements OperationPlane {
     if (node.type === 'input' && params?.value === undefined)
       return { ok: false, error: 'missing value' };
 
+    // Explicit branches; the success branch falls back to the legacy flat
+    // fields so actions that never declare success/failure keep old behavior,
+    // and a partial `success` object still inherits missing legacy fields.
+    const successBranch: ActionOutcomeMeta = {
+      sideEffects: node.meta.sideEffects,
+      transitionsTo: node.meta.transitionsTo,
+      ...node.meta.success,
+    };
+    const branchFor = (outcome: ActionOutcome): ActionOutcomeMeta =>
+      outcome === 'failure' ? (node.meta.failure ?? {}) : successBranch;
+
     // Strict: invoke ONLY the pre-registered fixed handler. No JS execution
     // crosses the wire; the handler was registered by the binding at compile time.
+    let signal: ActionOutcomeSignal;
     try {
-      await node.handler(params);
+      signal = await node.handler(params);
     } catch (e) {
-      return { ok: false, error: `handler: ${(e as Error).message}` };
+      // Unexpected throw: preserve the legacy error shape and do NOT claim a
+      // branch transition, because the handler may have failed before routing.
+      return {
+        ok: false,
+        outcome: 'failure',
+        error: `handler: ${(e as Error).message}`,
+      };
     }
 
-    // Passive graph recording: an actual traversal appends/updates the edge.
-    if (node.meta.transitionsTo) {
+    // DOM click listeners cannot return a value, so an action may provide an
+    // optional resolver that inspects app state after the handler ran.
+    if (signal === undefined && node.meta.resolveOutcome) {
+      try {
+        signal = await node.meta.resolveOutcome();
+      } catch (e) {
+        return {
+          ok: false,
+          outcome: 'failure',
+          error: `outcome: ${(e as Error).message}`,
+        };
+      }
+    }
+
+    const resolved = resolveOutcomeSignal(signal);
+    const outcome = resolved.outcome;
+    const branch = branchFor(outcome);
+    const transitionsTo = resolved.transitionsTo ?? branch.transitionsTo;
+    const sideEffects = branch.sideEffects;
+
+    // Passive graph recording: an actual traversal appends/updates the edge,
+    // keyed by branch so success and failure destinations can differ.
+    if (transitionsTo) {
       this.registry.recordTraversal(
         node.id,
         actionPageId,
-        node.meta.transitionsTo,
-        node.meta.description,
-        node.meta.sideEffects,
+        transitionsTo,
+        branch.description ?? node.meta.description,
+        sideEffects,
+        outcome,
+        branch.when,
       );
     }
 
-    return { ok: true, transitionsTo: node.meta.transitionsTo };
+    if (outcome === 'failure') {
+      return {
+        ok: false,
+        outcome,
+        error: resolved.error ?? 'action failed',
+        transitionsTo,
+        sideEffects,
+      };
+    }
+
+    return { ok: true, outcome, transitionsTo, sideEffects };
   }
 
   async waitForUI(timeoutMs = 5000): Promise<WaitResult> {
