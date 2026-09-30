@@ -32,7 +32,7 @@ export {
   type IssueTicketOptions,
 } from './bridge/ticket.ts';
 export { createWebSocketTransport, type WebSocketTransportOptions } from './transport/websocket.ts';
-export type { ConnectController, ConnectionStatus, TransportAdapter } from './transport/types.ts';
+export type { ConnectController, ConnectionStatus, DisconnectReason, StatusDetail, TransportAdapter } from './transport/types.ts';
 export * from './core/types.ts';
 
 // Build the core OperationPlane wired to the DOM deps (Web binding).

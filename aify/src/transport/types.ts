@@ -15,7 +15,31 @@ export interface TransportAdapter {
   stop(): void;
 }
 
-export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error';
+// Why these terminal statuses instead of a single 'error':
+//   - `disconnected` = the transport has STOPPED trying and needs a human
+//     (repaste credential / click retry). Each `reason` tells the UI what to do.
+//   - `reconnecting` = a live session dropped transiently; the transport is
+//     retrying on its own (exponential backoff, capped attempts).
+export type DisconnectReason =
+  | 'invalid-ticket' // server rejected the token (wrong key / store removed it)
+  | 'handshake-failed' // socket opened but never got the `registered` ack (wrong URL / not our server)
+  | 'expired' // ticket ttl passed before a reconnect could happen
+  | 'gave-up' // transient drops exhausted the retry budget
+  | 'closed' // graceful close from the bridge (e.g. you stopped the host)
+  | 'manual'; // user clicked disconnect
+
+export type ConnectionStatus =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'error';
+
+export interface StatusDetail {
+  error?: string;
+  reason?: DisconnectReason;
+}
 
 /**
  * A transport the page can connect on demand. Unlike a plain TransportAdapter,
@@ -32,5 +56,5 @@ export interface ConnectController extends TransportAdapter {
   /** Current connection state. */
   status(): ConnectionStatus;
   /** Subscribe to status changes; returns an unsubscribe fn. */
-  onStatus(cb: (s: ConnectionStatus, detail?: { error?: string }) => void): () => void;
+  onStatus(cb: (s: ConnectionStatus, detail?: StatusDetail) => void): () => void;
 }

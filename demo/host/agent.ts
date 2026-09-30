@@ -38,7 +38,7 @@ async function call(method: string, params: any = {}): Promise<any> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function pause(label: string) {
-  console.log(`   …暂停 ${STEP_PAUSE_MS / 1000}s（${label}）`)
+  console.log(`   ...pause ${STEP_PAUSE_MS / 1000}s（${label}）`)
   await sleep(STEP_PAUSE_MS)
 }
 
